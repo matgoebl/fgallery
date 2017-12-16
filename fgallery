@@ -44,6 +44,7 @@ my $mode = 0644;
 my $slim = 0;
 my $ofile = 0;
 my $orient = 1;
+my $do_blur = 1;
 my $timesort = 1;
 my $revsort = 0;
 my @filetypes = ("JPEG", "PNG", "TIFF");
@@ -379,6 +380,7 @@ sub print_help
   --quality Q		preview image quality (0-100, currently: $imgq)
   --link-orig		change images copy method (hard,sym,ref or copy)
   --index url		specify the URL location for the index/back button
+  --noblur		dont generate blurred images
   --title "Foo"		the title to use for Facebook and Twitter previews
   --description "bar"	the description to use for Facebook and Twitter previews
   --url url		the URL of your gallery (should probably end with output-dir and a slash)
@@ -414,6 +416,7 @@ my ($ret, @ARGS) = GetOptions(
   'min-thumb=s' => sub { @minthumb = parse_wh(@_); },
   'no-sRGB' => sub { $sRGB = 0; },
   'quality=i' => sub { $imgq = parse_int($_[0], $_[1], 0, 100); },
+  'noblur' => sub { $do_blur = 0; },
   'index=s' => sub { $indexUrl = $_[1]; },
   'title=s' => sub { $galleryTitle = $_[1]; },
   'description=s' => sub { $galleryDescription = $_[1]; },
@@ -836,18 +839,22 @@ sub process_img
       '+profile', '!icc,*',
       '-quality', $imgq, "$out/$fthumb");
 
-  # blur
-  sys('convert', '-quiet', "$out/$fthumb",
-      '-virtual-pixel', 'Mirror',
-      '-gaussian-blur', "0x$backblur",
-      '-scale', "$backsize[0]x$backsize[1]",
-      '-quality', '90', "$out/$fblur");
+  if ($do_blur) {
+      # blur
+      sys('convert', '-quiet', "$out/$fthumb",
+          '-virtual-pixel', 'Mirror',
+          '-gaussian-blur', "0x$backblur",
+          '-scale', "$backsize[0]x$backsize[1]",
+          '-quality', '90', "$out/$fblur");
+  }
 
   my %fdata;
   $fdata{props} = \%props;
   $fdata{img} = [$fimg, [map { int } @simg]];
   $fdata{file} = [$ffile, [map { int } @sfile]];
-  $fdata{blur} = $fblur;
+  if ($do_blur) {
+      $fdata{blur} = $fblur;
+  }
 
   # do not store duplicate information
   my @tdata = ($fthumb, [map { int } @mthumb]);
@@ -947,7 +954,9 @@ $json{version} = $VERSION;
 $json{name} = $name if($name);
 $json{download} = $fdownload if($fdownload);
 $json{index} = $indexUrl if($indexUrl);
-$json{blur} = \@backsize;
+if ($do_blur) {
+    $json{blur} = \@backsize;
+}
 $json{thumb} = { min => \@minthumb, max => \@maxthumb };
 
 foreach my $fdata(@adata)
