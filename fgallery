@@ -22,25 +22,27 @@ use Fcntl;
 use File::Basename qw{fileparse};
 use File::Find qw{find};
 use File::Path qw{make_path remove_tree};
-use File::Spec::Functions qw{rel2abs};
+use File::Spec::Functions qw{rel2abs canonpath catfile};
 use FindBin qw{$RealBin};
 use Getopt::Long qw{:config bundling};
 use IO::Handle;
 use Image::ExifTool qw{ImageInfo};
 use Time::Piece;
 
+use JSON::PP;
+
 # We require either Cpanel::JSON::XS or JSON::PP (JSON::XS does not support ithreads)
 my $JSON_cls = eval { require Cpanel::JSON::XS; "Cpanel::JSON::XS"; } //
 	       eval { require JSON::PP; "JSON::PP"; } //
 	       fatal("either Cpanel::JSON::XS or JSON::PP is required");
-$JSON_cls->import(qw{encode_json decode_json});
+$JSON_cls->import(qw{encode_json});
 
 # constants
 our $VERSION = "1.8.2";
 our $ENCODING = encoding::_get_locale_encoding() || 'UTF-8';
 
 # defaults
-my $mode = 0644;
+my $mode = oct(644);
 my $slim = 0;
 my $ofile = 0;
 my $orient = 1;
@@ -66,6 +68,8 @@ my $workers = 0;
 my $sRGB = 1;
 my $indexUrl = undef;
 my @capmethods = ("txt", "xmp", "exif");
+my $use_symlinks = 0;
+my $do_blur = 1;
 my $galleryTitle = "";
 my $galleryDescription = "";
 my $galleryUrl = "";
@@ -79,6 +83,14 @@ sub fatal
 {
   print(STDERR "error: " . join(" ", @_) . "\n");
   exit(1);
+}
+
+
+# see if our environment has a given command installed
+sub cmd_exists
+{
+  my ($c) = @_;
+  return qx{/bin/sh -c "command -v $c"};
 }
 
 
@@ -350,8 +362,66 @@ sub parse_copy_method
 
 sub print_version
 {
-  print("fgallery $VERSION\n");
-  exit(0);
+  my ($f, $t, $c) = @_;
+  return unless @_ == 3 && $f && $t;
+  $c = [] unless $c && ref $c eq 'ARRAY';
+  my $x = '';
+  for (@$c) {
+    $x .= ' ' if $c =~ /\S$/o;
+    $x .= $_ if defined $_ && /\S/o;
+  }
+  my $a = '';
+  $a = sprintf ' alt="%s"', $x if $x && $x =~ /\S/o;
+  printf '    <a href="%s"><img src="%s"%s></a>' . "\n", $f, $t, $a;
+}
+
+sub init_noscript
+{
+  my ($d) = @_;
+  fatal("init_noscript: $d not a directory")
+    unless $d && -d $d;
+  my $fd;
+  my $f = "$d/noscript.html";
+  unless(open($fd, ">:raw", $f)) {
+    fatal("init_noscript: cannot write file '$f': $!");
+  }
+  chmod($mode, $f);
+  select $fd;
+  print join "\n",
+    '<!DOCTYPE html>',
+    '<html>',
+    '<head>',
+    '  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />',
+    '  <meta name="viewport" '
+       . 'content="width=device-width,initial-scale=1,'
+       . 'minimum-scale=1,minimal-ui" />',
+    '  <link href="view/noscript.css" rel="stylesheet" type="text/css" />',
+    '</head>',
+    '<body>',
+    '  <section id="photos">',
+    '';
+}
+
+sub print_noscript
+# <a href="imgs/DSC00712.jpg"><img src="thumbs/DSC00712.jpg" alt="c1 c2"></a>
+{
+  my ($f, $t, $c) = @_;
+  return unless @_ == 3 && $f && $t;
+  $c = [] unless $c && ref $c eq 'ARRAY';
+  my $x = '';
+  for (@$c) {
+    $x .= ' ' if $c =~ /\S$/o;
+    $x .= $_ if defined $_ && /\S/o;
+  }
+  my $a = '';
+  $a = sprintf ' alt="%s"', $x if $x && $x =~ /\S/o;
+  printf '    <a href="%s"><img src="%s"%s></a>' . "\n", $f, $t, $a;
+}
+
+sub finish_noscript
+{
+  print join "\n", '  </section>', '</body>', '</html>', '';
+  select STDOUT;
 }
 
 sub print_help
@@ -372,6 +442,7 @@ sub print_help
   -d			do not generate a full album download
   -f			improve thumbnail cutting by performing face detection
   -j N			set process-level parallelism
+  -L                    symlink /usr/local/share/fgallery/view (instead of copy)
   --max-full WxH	maximum full image size ($maxfull[0]x$maxfull[1])
   --max-thumb WxH	maximum thumbnail size ($maxthumb[0]x$maxthumb[1])
   --min-thumb WxH	minimum thumbnail size ($minthumb[0]x$minthumb[1])
@@ -379,6 +450,7 @@ sub print_help
   --quality Q		preview image quality (0-100, currently: $imgq)
   --link-orig		change images copy method (hard,sym,ref or copy)
   --index url		specify the URL location for the index/back button
+  --noblur              skip blurry backdrop generation (just dark noise)
   --title "Foo"		the title to use for Facebook and Twitter previews
   --description "bar"	the description to use for Facebook and Twitter previews
   --url url		the URL of your gallery (should probably end with output-dir and a slash)
@@ -409,12 +481,14 @@ my ($ret, @ARGS) = GetOptions(
   't' => sub { $timesort = 0; },
   'u' => sub { $update = 1; },
   'v' => sub { $verbose = 1; },
+  'L' => sub { $use_symlinks = 1; },
   'max-full=s' => sub { @maxfull = parse_wh(@_); },
   'max-thumb=s' => sub { @maxthumb = parse_wh(@_); },
   'min-thumb=s' => sub { @minthumb = parse_wh(@_); },
   'no-sRGB' => sub { $sRGB = 0; },
   'quality=i' => sub { $imgq = parse_int($_[0], $_[1], 0, 100); },
   'index=s' => sub { $indexUrl = $_[1]; },
+  'noblur' => sub { $do_blur = 0; },
   'title=s' => sub { $galleryTitle = $_[1]; },
   'description=s' => sub { $galleryDescription = $_[1]; },
   'url=s' => sub { $galleryUrl = $_[1]; },
@@ -433,8 +507,16 @@ my $out = $ARGV[1];
 my $name = (@ARGV < 3? undef: $ARGV[2]);
 
 # check paths
-my $absDir = rel2abs($dir) . '/';
-my $absOut = rel2abs($out) . '/';
+my $absDir = canonpath(rel2abs($dir)) . '/';
+my $absOut = canonpath(rel2abs($out)) . '/';
+
+sub is_fgallery_dir
+{
+    return unless -e catfile($out, 'view');
+    return unless -e catfile($out, 'index.html');
+    return unless -e catfile($out, 'data.json');
+    return 1;
+}
 
 if(!-d $dir) {
   fatal("input directory \"$dir\" does not exist");
@@ -443,7 +525,9 @@ if(!-d $dir) {
 } elsif(substr($absOut, 0, length($absDir)) eq $absDir) {
   fatal("output directory is a sub-directory of input, refusing to scan");
 } elsif(!-d $out) {
+  mkdir($out);
   sys('cp', '-L', '-R', "$RealBin/view", $out);
+  sys('mv', "$out/view/index.html", $out);
 } elsif(!-f "$out/index.html") {
   fatal("output directory already exists, but doesn't look like a template copy");
 }
@@ -526,6 +610,7 @@ unless ($update) {
   for my $path("$out/thumbs", "$out/blurs", "$out/imgs", "$out/files")
   {
     remove_tree($path);
+    next if ($path eq "$out/blurs") && ! $do_blur;
     make_path($path);
   }
 }
@@ -841,13 +926,13 @@ sub process_img
       '-virtual-pixel', 'Mirror',
       '-gaussian-blur', "0x$backblur",
       '-scale', "$backsize[0]x$backsize[1]",
-      '-quality', '90', "$out/$fblur");
+      '-quality', '90', "$out/$fblur") if $do_blur;
 
   my %fdata;
   $fdata{props} = \%props;
   $fdata{img} = [$fimg, [map { int } @simg]];
   $fdata{file} = [$ffile, [map { int } @sfile]];
-  $fdata{blur} = $fblur;
+  $fdata{blur} = $fblur if $do_blur;
 
   # do not store duplicate information
   my @tdata = ($fthumb, [map { int } @mthumb]);
@@ -947,9 +1032,11 @@ $json{version} = $VERSION;
 $json{name} = $name if($name);
 $json{download} = $fdownload if($fdownload);
 $json{index} = $indexUrl if($indexUrl);
-$json{blur} = \@backsize;
+$json{blur} = \@backsize if $do_blur;
 $json{thumb} = { min => \@minthumb, max => \@maxthumb };
 
+# prepare data.json and print out noscript.html file
+init_noscript($out);
 foreach my $fdata(@adata)
 {
   my %data;
@@ -964,17 +1051,16 @@ foreach my $fdata(@adata)
     }
   }
   push(@{$json{data}}, \%data);
+  print_noscript($data{img}->[0], $data{thumb}->[0], $data{caption});
 }
-
-if ($update) {
-  $json{data} = [sort { $a->{stamp} <=> $b->{stamp} } @{$json{data}}, @odata];
-}
+finish_noscript();
 
 my $fd;
-unless(open($fd, '>:raw', "$out/data.json")) {
-  fatal("cannot write data file: $!");
+my $dj = "$out/data.json";
+unless(open($fd, ">:raw", $dj)) {
+  fatal("cannot write file '$dj': $!");
 }
-print($fd encode_json(\%json));
+print($fd JSON::PP->new->ascii->pretty->canonical->allow_blessed->encode(\%json));
 close($fd);
 
 # provide alternative for nojavascript
@@ -1024,4 +1110,4 @@ unless(open($fd, ">:encoding($ENCODING)", "$out/index.html")) {
 print($fd $index);
 close($fd);
 
-print("completed\n");
+print("$0 version $VERSION done for $absOut\n");
