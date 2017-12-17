@@ -53,6 +53,8 @@ var elist;	// thumbnail list
 var fscr;	// thumbnail list scroll fx
 var econt;	// picture container
 var ebuff;	// picture buffer
+var eleft;	// go left
+var eright;	// go right
 var oimg;	// old image
 var eimg;	// new image
 var cthumb;	// current thumbnail
@@ -430,12 +432,13 @@ function toggleCap()
   showHdr();
 }
 
-function toggleSlideshow()
+function toggleSlideshow(ev)
 {
   if(slideshow == 'on')
   {
     idle.removeEvent('idle', next);
     showHdr();
+    showNav();
     elist.setStyle('display', 'block');
     slideshow = 'off';
   }
@@ -443,10 +446,18 @@ function toggleSlideshow()
   {
     idle.addEvent('idle', next);
     hideHdr();
+    hideNav();
     elist.setStyle('display', 'none');
     slideshow = 'on';
   }
   resize();
+  ev.stop();
+}
+
+function stopSlideshow()
+{
+  if(slideshow == 'on')
+    toggleSlideshow();
 }
 
 function setupHeader()
@@ -486,6 +497,14 @@ function setupHeader()
   el = new Element('a', { 'title': 'Overview', 'href': 'view/overview.html' });
   el.set('html', '<img src="view/overview.png"/>');
   ehdr.adopt(el);
+  if(true) {
+    el = new Element('a', { 'title': 'Slideshow' });
+    el.setStyle('cursor', 'pointer');
+    el.addEvent('click', toggleSlideshow);
+    var img = new Element('img', { 'id': 'toggleslideshow', 'src': 'view/eye.png' });
+    img.inject(el);
+    ehdr.adopt(el);
+  }
   ehdr.setStyle('display', (ehdr.children.length? 'block': 'none'));
   ehdr.removeEvent('click', toggleSlideshow);
 }
@@ -607,11 +626,27 @@ function hideHdr()
   emain.addClass('no-cursor');
 }
 
+function hideNav()
+{
+  emain.addClass('no-cursor');
+  eleft.tween('opacity', 0);
+  eright.tween('opacity', 0);
+}
+
 function showHdr()
 {
   emain.removeClass('no-cursor');
   ehdr.get('tween').cancel();
   ehdr.fade('show');
+}
+
+function showNav()
+{
+  emain.removeClass('no-cursor');
+  eleft.get('tween').cancel();
+  eleft.fade('show');
+  eright.get('tween').cancel();
+  eright.fade('show');
 }
 
 function flash()
@@ -712,7 +747,7 @@ function initGallery(data)
   emain = $('gallery');
   emain.setStyle('display', 'none');
 
-  eback = new Element('img', { id: 'background' });
+  eback = new Element('div', { id: 'background' });
   eback.inject(emain);
 
   enoise = new Element('div', { id: 'noise' });
@@ -736,6 +771,16 @@ function initGallery(data)
 
   ecap = new Element('div', { id: 'caption' });
   ecap.inject(econt);
+
+  eleft = new Element('a', { id: 'left' });
+  eleft.adopt((new Element('div')).adopt(new Element('img', { 'src': 'view/left.png' })));
+  eleft.set('tween', { link: 'ignore' })
+  eleft.inject(econt);
+
+  eright = new Element('a', { id: 'right' });
+  eright.adopt((new Element('div')).adopt(new Element('img', { 'src': 'view/right.png' })));
+  eright.set('tween', { link: 'ignore' })
+  eright.inject(econt);
 
   ehdr = new Element('div', { id: 'header' });
   ehdr.set('tween', { link: 'ignore' })
@@ -776,12 +821,15 @@ function initGallery(data)
 
   // events and navigation shortcuts
   elist.addEvent('scroll', onScroll);
+  eleft.addEvent('click', prev);
+  eright.addEvent('click', next);
   window.addEvent('resize', onResize);
   window.addEvent('hashchange', change);
-  econt.addEvent('click', toggleSlideshow);
+  econt.addEvent('click', stopSlideshow);
 
   window.addEvent('keydown', function(ev)
   {
+  console.log(ev.key);
     if(ev.key == 'up' || ev.key == 'left')
     {
       ev.stop();
@@ -791,6 +839,11 @@ function initGallery(data)
     {
       ev.stop();
       next();
+    }
+    else if(ev.key == "esc" || ev.key == "x")
+    {
+      ev.stop();
+      stopSlideshow();
     }
   });
 
@@ -819,11 +872,12 @@ function initGallery(data)
     timeout: hidedelay,
     events: ['mousemove', 'mousedown', 'mousewheel']
   }).start();
-  idleMouse.addEvent('active', showHdr);
-  idleMouse.addEvent('idle', hideHdr);
+  idleMouse.addEvent('active', function() { showNav(); showHdr(); });
+  idleMouse.addEvent('idle', hideNav);
 
   // general idle callback
   idle = new IdleTimer(window, { timeout: slidedelay }).start();
+  idle.addEvent('idle', hideHdr);
 
   // prepare first image
   sdir = 1;
@@ -871,6 +925,7 @@ function init()
 
   // preload some resources
   Asset.images(['view/throbber.gif', 'view/overview.png',
+		'view/left.png', 'view/right.png',
 		'view/eye.png', 'view/download.png', 'view/back.png',
 		'view/cap-normal.png', 'view/cap-always.png', 'view/cap-never.png',
 		'view/cut-left.png', 'view/cut-right.png',
