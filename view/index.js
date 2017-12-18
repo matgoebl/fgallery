@@ -829,7 +829,6 @@ function initGallery(data)
 
   window.addEvent('keydown', function(ev)
   {
-  console.log(ev.key);
     if(ev.key == 'up' || ev.key == 'left')
     {
       ev.stop();
@@ -840,7 +839,12 @@ function initGallery(data)
       ev.stop();
       next();
     }
-    else if(ev.key == "esc" || ev.key == "x")
+    else if(ev.key == "enter")
+    {
+      ev.stop();
+      toggleSlideshow();
+    }
+    else if(ev.key == "esc")
     {
       ev.stop();
       stopSlideshow();
