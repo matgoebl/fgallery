@@ -849,6 +849,25 @@ function initGallery(data)
       ev.stop();
       stopSlideshow();
     }
+    else if(ev.code == 36)
+    {
+      ev.stop();
+      switchTo(0);
+    }
+    else if(ev.code == 35)
+    {
+      ev.stop();
+      switchTo(imgs.data.length - 1);
+    }
+    else if(ev.key == "d")
+    {
+      ev.stop();
+      var input = prompt("Slide show delay [in ms]", slidedelay);
+      if (input) {
+        slidedelay = parseInt(input);
+        idle.setTimeout(slidedelay);
+      }
+    }
   });
 
   econt.addEvent('mousewheel', function(ev)
