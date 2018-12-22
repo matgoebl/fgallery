@@ -707,7 +707,9 @@ function load(i)
 function getLocationIndex()
 {
   var hash = window.location.hash;
-  var idx = parseInt(!hash.indexOf('#')? hash.substr(1): hash);
+  var tag = !hash.indexOf('#')? hash.substr(1): hash;
+  var rnd = Math.floor((Math.random() * imgs.data.length));
+  var idx = tag == "rnd" ? rnd : parseInt(tag);
   if(isNaN(idx) || idx < 0)
     idx = 0;
   else if(idx >= imgs.data.length)
